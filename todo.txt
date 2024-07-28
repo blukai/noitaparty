@@ -1,0 +1,4 @@
+- [ ] merge server and client into a single directory
+- [ ] same structure for lobby client as for lobby server
+- [ ] client's send/receieve should be async/non-blocking
+- [ ] broadcast player positions
