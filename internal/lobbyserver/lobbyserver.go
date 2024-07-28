@@ -7,6 +7,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/blukai/noitaparty/internal/byteorder"
 	"github.com/blukai/noitaparty/internal/debug"
 	"github.com/blukai/noitaparty/internal/protocol"
 	"github.com/phuslu/log"
@@ -16,6 +17,9 @@ type LobbyServer struct {
 	conn   *net.UDPConn
 	buf    []byte
 	logger *log.Logger
+
+	clients map[uint32]*net.UDPAddr
+	seed    int32
 }
 
 func NewLobbyServer(network, address string, logger *log.Logger) (*LobbyServer, error) {
@@ -85,36 +89,93 @@ func (ls *LobbyServer) Run(ctx context.Context) error {
 }
 
 func (ls *LobbyServer) handleMsg(addr *net.UDPAddr) {
-	cmdHeader := protocol.CmdHeader{}
-	err := cmdHeader.UnmarshalBinary(ls.buf[:protocol.CmdHeaderSize])
+	cmd := protocol.Cmd{}
+	err := cmd.UnmarshalBinary(ls.buf)
 	debug.Assert(err == nil)
 	ls.logger.Debug().
-		Msgf("recv: %+v", cmdHeader)
+		Msgf("recv: %+v", cmd)
 
-	go func(cmdHeader *protocol.CmdHeader) {
+	go func(cmd protocol.Cmd) {
 		var err error
 
-		switch cmdHeader.Cmd {
+		switch cmd.Header.Cmd {
 		case protocol.CCmdPing:
-			err = ls.handleCmdPing(addr)
+			err = ls.handleCCmdPing(addr)
 		case protocol.CCmdJoin:
-			panic("unimplemented")
+			err = ls.handleCCmdJoin(addr, &cmd)
 		case protocol.CCmdTransformPlayer:
-			panic("unimplemented")
+			err = ls.handleCCmdTransformPlayer(addr, &cmd)
 		}
 
 		if err != nil {
 			ls.logger.Error().
-				Msgf("error handling message (addr: %s; header: %v)", addr.String(), cmdHeader)
+				Msgf("error handling message (addr: %s; cmd: %v)", addr.String(), cmd)
 		}
-	}(&cmdHeader)
+	}(cmd)
 }
 
-func (ls *LobbyServer) handleCmdPing(addr *net.UDPAddr) error {
+func (ls *LobbyServer) handleCCmdPing(addr *net.UDPAddr) error {
 	header := protocol.CmdHeader{Cmd: protocol.SCmdPong}
 	headerBytes, err := header.MarshalBinary()
 	debug.Assert(err == nil)
 
 	_, err = ls.conn.WriteToUDP(headerBytes, addr)
 	return err
+}
+
+func id(addr *net.UDPAddr) uint32 {
+	// NOTE(blukai): IPv4 constructor sets the last 4 bytes, see
+	// https://cs.opensource.google/go/go/+/refs/tags/go1.22.5:src/net/ip.go;l=52
+	return byteorder.Ntohl(addr.IP[12:16])
+}
+
+func (ls *LobbyServer) handleCCmdJoin(addr *net.UDPAddr, cmd *protocol.Cmd) error {
+	debug.Assert(cmd.Header.Cmd == protocol.CCmdJoin)
+
+	seed, ok := cmd.Body.(*protocol.NetworkedInt32)
+	debug.Assert(ok)
+
+	if len(ls.clients) == 0 {
+		ls.seed = int32(*seed)
+	}
+
+	ls.clients[id(addr)] = addr
+
+	return nil
+}
+
+func (ls *LobbyServer) handleCCmdTransformPlayer(addr *net.UDPAddr, cmd *protocol.Cmd) error {
+	debug.Assert(cmd.Header.Cmd == protocol.CCmdTransformPlayer)
+
+	transform, ok := cmd.Body.(*protocol.NetworkedInt32Vector2)
+	debug.Assert(ok)
+
+	senderID := id(addr)
+
+	sendCmd := protocol.Cmd{
+		Header: &protocol.CmdHeader{
+			Cmd:  protocol.SCmdTransformPlayer,
+			Size: 12,
+		},
+		Body: &protocol.NetworkedPlayer{
+			ID:        protocol.NetworkedUint32(senderID),
+			Transform: *transform,
+		},
+	}
+	sendCmdBytes, err := sendCmd.MarshalBinary()
+	debug.Assert(err == nil)
+
+	for recverID, recverAddr := range ls.clients {
+		if recverID == senderID {
+			continue
+		}
+
+		_, err := ls.conn.WriteToUDP(sendCmdBytes, recverAddr)
+		if err != nil {
+			// TODO: accumulate errors, and maybe remove clients who
+			// we are failing to write to!
+		}
+	}
+
+	return nil
 }

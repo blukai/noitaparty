@@ -8,6 +8,7 @@ import (
 
 	"github.com/blukai/noitaparty/internal/debug"
 	"github.com/blukai/noitaparty/internal/protocol"
+	"github.com/blukai/noitaparty/internal/ptr"
 )
 
 type LobbyClient struct {
@@ -19,6 +20,9 @@ type LobbyClient struct {
 
 	writeTimeout time.Duration
 	readTimeout  time.Duration
+
+	// NOTE(blukai): key is player's id
+	players map[protocol.NetworkedUint32]*protocol.NetworkedPlayer
 }
 
 func NewLobbyClient(network, address string) (*LobbyClient, error) {
@@ -85,7 +89,18 @@ func (ls *LobbyClient) Run(ctx context.Context) error {
 				// TODO(blukai): how to handle cmd unmarshal error?
 				continue
 			}
-			ls.read <- cmd
+
+			switch cmd.Header.Cmd {
+			// intercept some commands that don't need to be read
+			// individually
+			case protocol.SCmdTransformPlayer:
+				player, ok := cmd.Body.(*protocol.NetworkedPlayer)
+				debug.Assert(ok)
+				ls.players[player.ID] = player
+			default:
+				ls.read <- cmd
+			}
+
 		}
 	}
 }
@@ -103,30 +118,74 @@ func (ls *LobbyClient) recv() (*protocol.Cmd, error) {
 	}
 }
 
-func (ls *LobbyClient) SendPing() {
-	pingCmd := protocol.Cmd{
+func (ls *LobbyClient) SendCCmdPing() {
+	sendCmd := protocol.Cmd{
 		Header: &protocol.CmdHeader{
 			Cmd: protocol.CCmdPing,
 		},
 	}
-	ls.send(pingCmd)
+	ls.send(sendCmd)
 
-	pongCmd, err := ls.recv()
+	recvCmd, err := ls.recv()
 	if err != nil {
 		// TODO(blukai): how to handle recv error?
 		return
 	}
-	if pongCmd.Header.Cmd != protocol.SCmdPong {
+	if recvCmd.Header.Cmd != protocol.SCmdPong {
 		// TODO(blukai): how to handle unexpected recv cmd error?
 		return
 	}
 }
 
-func (ls *LobbyClient) SendJoin(seed int32) {
-	// TODO: await set seed
-	panic("unimplemented")
+func (ls *LobbyClient) SendCCmdJoinRecvSCmdSetSeed(seed int32) int32 {
+	sendCmd := protocol.Cmd{
+		Header: &protocol.CmdHeader{
+			Cmd:  protocol.CCmdJoin,
+			Size: 4,
+		},
+		Body: ptr.To(protocol.NetworkedInt32(seed)),
+	}
+	ls.send(sendCmd)
+
+	recvCmd, err := ls.recv()
+	if err != nil {
+		// TODO(blukai): how to handle recv error?
+		return 0
+	}
+	if recvCmd.Header.Cmd != protocol.SCmdSetSeed {
+		// TODO(blukai): how to handle unexpected recv cmd error?
+		return 0
+	}
+
+	recvSeed, ok := recvCmd.Body.(*protocol.NetworkedInt32)
+	debug.Assert(ok)
+
+	return int32(*recvSeed)
 }
 
-func (ls *LobbyClient) SendTransformPlayer(x int32, y int32) {
-	panic("unimplemented")
+func (ls *LobbyClient) SendSCmdTransformPlayer(x int32, y int32) {
+	sendCmd := protocol.Cmd{
+		Header: &protocol.CmdHeader{
+			Cmd:  protocol.CCmdTransformPlayer,
+			Size: 8,
+		},
+		Body: ptr.To(protocol.NetworkedInt32Vector2{
+			X: protocol.NetworkedInt32(x),
+			Y: protocol.NetworkedInt32(y),
+		}),
+	}
+	ls.send(sendCmd)
+}
+
+// TODO(blukai): GetDeltaPlayers or something.. to not have to
+// re-draw(/re-update) things that already are up to date.
+func (ls *LobbyClient) GetPlayers() []*protocol.NetworkedPlayer {
+	nel := len(ls.players)
+	players := make([]*protocol.NetworkedPlayer, nel, nel)
+	i := 0
+	for _, player := range ls.players {
+		players[i] = player
+		i += 1
+	}
+	return players
 }
