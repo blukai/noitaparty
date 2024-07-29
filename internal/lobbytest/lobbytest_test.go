@@ -13,7 +13,16 @@ import (
 
 func TestTwoPlayers(t *testing.T) {
 	is := is.New(t)
+
 	logger := &log.DefaultLogger
+	// https://github.com/phuslu/log?tab=readme-ov-file#pretty-console-writer
+	logger.Caller = 1
+	logger.TimeFormat = "15:04:05"
+	logger.Writer = &log.ConsoleWriter{
+		ColorOutput:    true,
+		QuoteString:    true,
+		EndWithMessage: true,
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -29,7 +38,6 @@ func TestTwoPlayers(t *testing.T) {
 	go playerOneClient.Run(ctx)
 
 	playerOneID := uint64(1)
-	playerOneSeed := int32(111)
 
 	playerOneX := int32(24)
 	playerOneY := int32(13)
@@ -41,23 +49,28 @@ func TestTwoPlayers(t *testing.T) {
 	go playerTwoClient.Run(ctx)
 
 	playerTwoID := uint64(2)
-	playerTwoSeed := int32(222)
 
 	// join player one
 
-	seed := playerOneClient.SendCCmdJoinRecvSCmdSetSeed(playerOneID, playerOneSeed)
-	is.Equal(seed, playerOneSeed)
+	t.Log("join one")
+	playerOneSeed, err := playerOneClient.SendCCmdJoinRecvSCmdSetSeed(playerOneID)
+	is.NoErr(err)
 
 	// join player two
 
-	seed = playerTwoClient.SendCCmdJoinRecvSCmdSetSeed(playerTwoID, playerTwoSeed)
-	is.Equal(seed, playerOneSeed)
+	t.Log("join two")
+	playerTwoSeed, err := playerTwoClient.SendCCmdJoinRecvSCmdSetSeed(playerTwoID)
+	is.NoErr(err)
+
+	is.Equal(playerOneSeed, playerTwoSeed)
 
 	// transform player one
 
-	playerOneClient.SendSCmdTransformPlayer(playerOneID, playerOneX, playerOneY)
+	t.Log("transform player one")
+	playerOneClient.SendCCmdTransformPlayer(playerOneID, playerOneX, playerOneY)
 	// NOTE(blukai): need to sleep for a bit because client's send/recv is "async"
 	time.Sleep(time.Millisecond)
+
 	players := playerTwoClient.GetPlayers()
 	is.Equal(len(players), 1)
 	is.Equal(int32(players[0].Transform.X), playerOneX)

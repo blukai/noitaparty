@@ -133,7 +133,7 @@ func (cmd *Cmd) UnmarshalBinary(data []byte) error {
 		switch cmd.Header.Cmd {
 		// client
 		case CCmdJoin:
-			body = &NetworkedJoin{}
+			body = ptr.To(NetworkedUint64(0))
 		case CCmdTransformPlayer:
 			body = &NetworkedTransformPlayer{}
 		// server
@@ -256,42 +256,6 @@ func (n *NetworkedTransformPlayer) UnmarshalBinary(data []byte) error {
 	debug.Assert(err == nil)
 
 	err = n.Transform.UnmarshalBinary(data[8:16])
-	debug.Assert(err == nil)
-
-	return nil
-}
-
-type NetworkedJoin struct {
-	ID   NetworkedUint64
-	Seed NetworkedInt32
-}
-
-var (
-	_ encoding.BinaryMarshaler   = (*NetworkedInt32Vector2)(nil)
-	_ encoding.BinaryUnmarshaler = (*NetworkedInt32Vector2)(nil)
-)
-
-func (n *NetworkedJoin) MarshalBinary() ([]byte, error) {
-	buf := bytes.Buffer{}
-
-	id, err := n.ID.MarshalBinary()
-	debug.Assert(err == nil)
-	buf.Write(id)
-
-	seed, err := n.Seed.MarshalBinary()
-	debug.Assert(err == nil)
-	buf.Write(seed)
-
-	return buf.Bytes(), nil
-}
-
-func (n *NetworkedJoin) UnmarshalBinary(data []byte) error {
-	debug.Assert(len(data) == 12)
-
-	err := n.ID.UnmarshalBinary(data[0:8])
-	debug.Assert(err == nil)
-
-	err = n.Seed.UnmarshalBinary(data[8:12])
 	debug.Assert(err == nil)
 
 	return nil

@@ -9,8 +9,14 @@ import (
 
 	"github.com/blukai/noitaparty/internal/debug"
 	"github.com/blukai/noitaparty/internal/protocol"
+	"github.com/blukai/noitaparty/internal/ptr"
 	"github.com/phuslu/log"
 )
+
+type sendChPayload struct {
+	cmd   protocol.Cmd
+	errCh chan error
+}
 
 type LobbyClient struct {
 	conn    *net.UDPConn
@@ -18,7 +24,7 @@ type LobbyClient struct {
 
 	logger *log.Logger
 
-	sendCh chan protocol.Cmd
+	sendCh chan sendChPayload
 	recvCh chan protocol.Cmd
 
 	writeTimeout time.Duration
@@ -53,7 +59,7 @@ func NewLobbyClient(network, address string, logger *log.Logger) (*LobbyClient, 
 
 		logger: logger,
 
-		sendCh: make(chan protocol.Cmd),
+		sendCh: make(chan sendChPayload),
 		recvCh: make(chan protocol.Cmd),
 
 		writeTimeout: time.Second,
@@ -65,34 +71,17 @@ func NewLobbyClient(network, address string, logger *log.Logger) (*LobbyClient, 
 	return lc, nil
 }
 
-func (lc *LobbyClient) Run(ctx context.Context) error {
-	go func() {
-		ticker := time.NewTicker(time.Second)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				cCmdHeartbeat := protocol.Cmd{
-					Header: &protocol.CmdHeader{
-						Cmd:  protocol.CCmdHeartbeat,
-						Size: 0,
-					},
-					Body: nil,
-				}
-				lc.sendCmd(cCmdHeartbeat)
-			}
-		}
-	}()
-
+func (lc *LobbyClient) runSendCh(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case payload := <-lc.sendCh:
 			lc.logger.Debug().
-				Msg("done")
-			return lc.conn.Close()
-		case cmd := <-lc.sendCh:
-			cmdBytes, err := cmd.MarshalBinary()
+				Any("cmd", &payload.cmd).
+				Msg("sendCmd")
+
+			cmdBytes, err := payload.cmd.MarshalBinary()
 			debug.Assert(err == nil)
 
 			err = lc.conn.SetWriteDeadline(time.Now().Add(lc.writeTimeout))
@@ -102,8 +91,24 @@ func (lc *LobbyClient) Run(ctx context.Context) error {
 			if err != nil {
 				lc.logger.Error().
 					Msgf("could not write: %v", err)
-				// TODO(blukai): how to handle write error?
+
+				payload.errCh <- err
+				continue
 			}
+
+			// TODO(blukai): do i need to send a nil, can't i just
+			// close it?
+			payload.errCh <- nil
+			close(payload.errCh)
+		}
+	}
+}
+
+func (lc *LobbyClient) runRecvCh(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
 		default:
 			err := lc.conn.SetReadDeadline(time.Now().Add(lc.readTimeout))
 			debug.Assert(err == nil)
@@ -135,7 +140,8 @@ func (lc *LobbyClient) Run(ctx context.Context) error {
 			}
 
 			lc.logger.Debug().
-				Msgf("recv: %+#v", &cmd)
+				Any("cmd", &cmd).
+				Msgf("recv")
 
 			switch cmd.Header.Cmd {
 			// intercept some commands that don't need to be read
@@ -147,13 +153,52 @@ func (lc *LobbyClient) Run(ctx context.Context) error {
 			default:
 				lc.recvCh <- cmd
 			}
-
 		}
 	}
 }
 
-func (lc *LobbyClient) sendCmd(cmd protocol.Cmd) {
-	lc.sendCh <- cmd
+func (lc *LobbyClient) runHeartbeat(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cCmdHeartbeat := protocol.Cmd{
+				Header: &protocol.CmdHeader{
+					Cmd:  protocol.CCmdHeartbeat,
+					Size: 0,
+				},
+				Body: nil,
+			}
+			lc.sendCmd(cCmdHeartbeat)
+		}
+	}
+}
+
+func (lc *LobbyClient) Run(ctx context.Context) error {
+	go lc.runSendCh(ctx)
+	go lc.runRecvCh(ctx)
+
+	go lc.runHeartbeat(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			lc.logger.Debug().
+				Msg("done")
+			return lc.conn.Close()
+		}
+	}
+}
+
+func (lc *LobbyClient) sendCmd(cmd protocol.Cmd) <-chan error {
+	errChan := make(chan error, 1)
+	lc.sendCh <- sendChPayload{
+		cmd:   cmd,
+		errCh: errChan,
+	}
+	return errChan
 }
 
 func (lc *LobbyClient) recvCmd() (*protocol.Cmd, error) {
@@ -165,56 +210,68 @@ func (lc *LobbyClient) recvCmd() (*protocol.Cmd, error) {
 	}
 }
 
-func (lc *LobbyClient) SendCCmdPing() {
+// SendCCmdPing is blocking
+func (lc *LobbyClient) SendCCmdPing() error {
 	cCmdPing := protocol.Cmd{
 		Header: &protocol.CmdHeader{
 			Cmd: protocol.CCmdPing,
 		},
 	}
-	lc.sendCmd(cCmdPing)
+	err := <-lc.sendCmd(cCmdPing)
+	if err != nil {
+		return fmt.Errorf("could not send: %w", err)
+	}
 
 	sCmdPong, err := lc.recvCmd()
 	if err != nil {
-		// TODO(blukai): how to handle recv error?
-		return
+		return fmt.Errorf("no pong: %w", err)
 	}
 	if sCmdPong.Header.Cmd != protocol.SCmdPong {
-		// TODO(blukai): how to handle unexpected recv cmd error?
-		return
+		return fmt.Errorf(
+			"received unexpected cmd back (got %d; want %d)",
+			sCmdPong.Header.Cmd,
+			protocol.SCmdPong,
+		)
 	}
+
+	return nil
 }
 
-// SendCCmdJoinRecvSCmdSetSeed returns seed. 0 is invalid value.
-func (lc *LobbyClient) SendCCmdJoinRecvSCmdSetSeed(id uint64, seed int32) int32 {
+// SendCCmdJoinRecvSCmdSetSeed is blocking
+func (lc *LobbyClient) SendCCmdJoinRecvSCmdSetSeed(id uint64) (int32, error) {
 	cCmdJoin := protocol.Cmd{
 		Header: &protocol.CmdHeader{
 			Cmd:  protocol.CCmdJoin,
-			Size: 12,
+			Size: 8,
 		},
-		Body: &protocol.NetworkedJoin{
-			ID:   protocol.NetworkedUint64(id),
-			Seed: protocol.NetworkedInt32(seed),
-		},
+		Body: ptr.To(protocol.NetworkedUint64(id)),
 	}
-	lc.sendCmd(cCmdJoin)
+	err := <-lc.sendCmd(cCmdJoin)
+	if err != nil {
+		return 0, fmt.Errorf("could not send: %w", err)
+	}
 
 	recvCmd, err := lc.recvCmd()
 	if err != nil {
-		// TODO(blukai): how to handle recv error?
-		return 0
+		return 0, fmt.Errorf("could not recv: %w", err)
 	}
 	if recvCmd.Header.Cmd != protocol.SCmdSetSeed {
-		// TODO(blukai): how to handle unexpected recv cmd error?
-		return 0
+		// TODO(blukai): generalize unexpected cmd err
+		return 0, fmt.Errorf(
+			"received unexpected cmd back (got %d; want %d)",
+			recvCmd.Header.Cmd,
+			protocol.SCmdPong,
+		)
 	}
 
 	recvSeed, ok := recvCmd.Body.(*protocol.NetworkedInt32)
 	debug.Assert(ok)
 
-	return int32(*recvSeed)
+	return int32(*recvSeed), nil
 }
 
-func (lc *LobbyClient) SendSCmdTransformPlayer(id uint64, x int32, y int32) {
+// SendCCmdTransformPlayer is non-blocking, potential err is ignored
+func (lc *LobbyClient) SendCCmdTransformPlayer(id uint64, x int32, y int32) {
 	cCmdTransformPlayer := protocol.Cmd{
 		Header: &protocol.CmdHeader{
 			Cmd:  protocol.CCmdTransformPlayer,

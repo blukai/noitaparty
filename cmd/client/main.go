@@ -3,17 +3,17 @@ package main
 import "C"
 
 import (
-	"fmt"
-	"net"
-	"time"
+	"context"
 
 	"github.com/blukai/noitaparty/internal/debug"
+	"github.com/blukai/noitaparty/internal/lobbyclient"
 	"github.com/blukai/noitaparty/internal/protocol"
 )
 
 var (
-	conn    *net.UDPConn
+	lc      *lobbyclient.LobbyClient
 	lastErr error
+	cancel  context.CancelFunc
 )
 
 //export LastErr
@@ -26,48 +26,63 @@ func LastErr() *C.char {
 
 //export Connect
 func Connect(network, address *C.char) {
-	addr, err := net.ResolveUDPAddr(C.GoString(network), C.GoString(address))
+	debug.Assert(lc == nil)
+
+	lobbyClient, err := lobbyclient.NewLobbyClient(C.GoString(network), C.GoString(address), nil)
 	if err != nil {
-		lastErr = fmt.Errorf("could not resolve udp addr: %w", err)
+		lastErr = err
 		return
 	}
 
-	conn, err = net.DialUDP(C.GoString(network), nil, addr)
-	if err != nil {
-		lastErr = fmt.Errorf("could not dial udp: %w", err)
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	go lobbyClient.Run(ctx)
+
+	if err := lobbyClient.SendCCmdPing(); err != nil {
+		lastErr = err
+		cancelFunc()
 		return
 	}
+
+	lc = lobbyClient
+	cancel = cancelFunc
 }
 
-//export Disconnect
-func Disconnect() {
-	debug.Assert(conn != nil)
+//export SendCCmdJoinRecvSCmdSetSeed
+func SendCCmdJoinRecvSCmdSetSeed(id uint64) int32 {
+	debug.Assert(lc != nil)
 	debug.Assert(lastErr == nil)
 
-	err := conn.Close()
+	seed, err := lc.SendCCmdJoinRecvSCmdSetSeed(id)
 	if err != nil {
-		lastErr = fmt.Errorf("could not close: %w", err)
+		lastErr = err
+		return 0
 	}
+
+	return seed
 }
 
-// TODO: non-blocking send command (goroutine?)
-
-//export SendPing
-func SendPing() {
-	debug.Assert(conn != nil)
+//export SendCCmdTransformPlayer
+func SendCCmdTransformPlayer(id uint64, x int32, y int32) {
+	debug.Assert(lc != nil)
 	debug.Assert(lastErr == nil)
 
-	pingHeader := protocol.CmdHeader{Cmd: protocol.CCmdPing}
-	pingHeaderBytes, err := pingHeader.MarshalBinary()
-	debug.Assert(err == nil)
-
-	err = conn.SetWriteDeadline(time.Now().Add(time.Second))
-	debug.Assert(err == nil)
-
-	_, err = conn.Write(pingHeaderBytes)
-	if err != nil {
-		lastErr = fmt.Errorf("could not write: %w", err)
-	}
+	lc.SendCCmdTransformPlayer(id, x, y)
 }
 
-func main() {}
+// NOTE(blukai): this is some hackery for GoSlice, idk yet
+type Player = *protocol.NetworkedTransformPlayer
+
+//export GetPlayers
+func GetPlayers() []Player {
+	debug.Assert(lc != nil)
+	debug.Assert(lastErr == nil)
+
+	return lc.GetPlayers()
+}
+
+// TODO: how can mod issue a disconnect when game is finished, etc?
+
+func main() {
+	// Connect(C.CString("udp4"), C.CString("127.0.0.1:8008"))
+	// fmt.Println(lastErr)
+}

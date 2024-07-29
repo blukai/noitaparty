@@ -1,116 +1,23 @@
-local ffi = require("ffi")
-
---
--- noitaparty client
---
-
-local client = ffi.load("mods/noitaparty/files/client.dll")
-
--- http://lua-users.org/wiki/StringRecipes
-local function string_starts_with(str, start)
-	return str:sub(1, #start) == start
-end
-
--- NOTE(blukai): lua's c language support is not complete..
--- see https://luajit.org/ext_ffi_semantics.html#clang
--- thus certain things need to be removed.
--- what is removed?
--- - #ifdef .. #endif
--- what is kept?
--- - lines that start with typedef, extern
-local function cdef_header_file(filename)
-	local file = io.open(filename, "r")
-	assert(file ~= nil)
-
-	local lines = {}
-	local inside_ifdef = false
-	for line in file:lines() do
-		if inside_ifdef then
-			inside_ifdef = not string_starts_with(line, "#endif")
-		elseif string_starts_with(line, "#ifdef") then
-			inside_ifdef = true
-		elseif string_starts_with(line, "typedef") or string_starts_with(line, "extern") then
-			table.insert(lines, line)
-		end
-	end
-
-	file:close()
-	ffi.cdef(table.concat(lines, "\n"))
-end
-
-cdef_header_file("mods/noitaparty/files/client.h")
-
-local function cstring(str)
-	local dst = ffi.new("char[?]", #str + 1)
-	ffi.copy(dst, str)
-	return dst
-end
-
-client.Connect(cstring("udp4"), cstring("127.0.0.1:8008"))
-print("CONNECTED!!!!!!!!!!!!!!!!!!!!!!")
-print(type(client.LastErr()))
-
-client.SendPing()
-print("SENT PING!!!!!!!!!!!!!!!!!!!!!!!!!!")
-print(type(client.LastErr()))
-
-client.Disconnect()
-print("DISCONNECTED!!!!!!!!!!!!!!!!!!!!!!!!!!")
-print(type(client.LastErr()))
-
---
----- steam api
---
-
-local steam_api = ffi.load("steam_api.dll")
-ffi.cdef([[
-typedef int32_t int32;
-typedef uint64_t uint64;
-
-typedef struct ISteamClient {} ISteamClient;
-typedef int32 HSteamPipe;
-typedef int32 HSteamUser;
-typedef struct ISteamUser {} ISteamUser;
-typedef uint64 uint64_steamid;
-typedef struct ISteamFriends {} ISteamFriends;
-
-ISteamClient * SteamClient();
-HSteamPipe SteamAPI_ISteamClient_CreateSteamPipe( ISteamClient* self );
-HSteamUser SteamAPI_ISteamClient_ConnectToGlobalUser( ISteamClient* self, HSteamPipe hSteamPipe );
-
-ISteamUser * SteamAPI_ISteamClient_GetISteamUser( ISteamClient* self, HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char * pchVersion );
-ISteamFriends * SteamAPI_ISteamClient_GetISteamFriends( ISteamClient* self, HSteamUser hSteamUser, HSteamPipe hSteamPipe, const char * pchVersion );
-
-uint64_steamid SteamAPI_ISteamUser_GetSteamID( ISteamUser* self );
-const char * SteamAPI_ISteamFriends_GetPersonaName( ISteamFriends* self );
-]])
-
-local iSteamClient = steam_api.SteamClient()
-assert(iSteamClient ~= nil)
-local hSteamPipe = steam_api.SteamAPI_ISteamClient_CreateSteamPipe(iSteamClient)
-assert(hSteamPipe ~= nil)
-local hSteamUser = steam_api.SteamAPI_ISteamClient_ConnectToGlobalUser(iSteamClient, hSteamPipe)
-assert(hSteamUser ~= nil)
-local iSteamUser = steam_api.SteamAPI_ISteamClient_GetISteamUser(iSteamClient, hSteamUser, hSteamPipe, "SteamUser019")
-assert(iSteamUser ~= nil)
-local iSteamFriends =
-	steam_api.SteamAPI_ISteamClient_GetISteamFriends(iSteamClient, hSteamUser, hSteamPipe, "SteamFriends015")
-assert(iSteamFriends ~= nil)
-
-local steamid = steam_api.SteamAPI_ISteamUser_GetSteamID(iSteamUser)
-local persona_name = steam_api.SteamAPI_ISteamFriends_GetPersonaName(iSteamFriends)
-print("steamid and persona_name", tostring(steamid), ffi.string(persona_name))
-
---
--- rest
---
+local steam_api = dofile_once("mods/noitaparty/files/steam_api.lua")
+-- TODO(blukai): rename client into something more verbose (like lobbyclient or
+-- something)
+local client = dofile_once("mods/noitaparty/files/client.lua")
 
 -- NOTE(blukai): might need this later
 -- dofile_once("data/scripts/lib/utilities.lua")
 
+STEAM_ID = nil
+
+-- TODO(blukai): find a nicer way to do error reporting, more sane
+UNPRINTED_ERR = nil
+CRITICAL_ERROR_ENDING = ". can't continue. seek help!"
+
 -- TODO(blukai): introduce some kind of global state "object" that would be more
 -- convenient to deal with then a bunch of individual globals.
-KUMMITUS_ENTITY = nil
+-- KUMMITUS_ENTITY = nil
+-- KUMMITUS_ENTITY = EntityLoad("mods/noitaparty/files/kummitus.xml")
+-- local player_x, player_y = EntityGetTransform(player_entity)
+-- EntitySetTransform(KUMMITUS_ENTITY, player_x - 10, player_y - 10)
 
 local function get_player_entity()
 	local players = EntityGetWithTag("player_unit")
@@ -122,8 +29,27 @@ end
 
 -- Called in order upon loading a new(?) game:
 function OnModPreInit()
-	-- TODO(blukai): connect to server and set world seed (SetWorldSeed)...
-	-- maybe blocking server connection ui (with address input).
+	STEAM_ID = steam_api.ISteamUser.GetSteamID()
+	if STEAM_ID == nil then
+		UNPRINTED_ERR = "could not get steam id" .. CRITICAL_ERROR_ENDING
+		print(UNPRINTED_ERR)
+		return
+	end
+
+	local connect_err = client.Connect("udp4", "127.0.0.1:8008")
+	if connect_err ~= nil then
+		UNPRINTED_ERR = "could not connect: " .. connect_err .. CRITICAL_ERROR_ENDING
+		print(UNPRINTED_ERR)
+		return
+	end
+
+	local seed, seed_err = client.SendCCmdJoinRecvSCmdSetSeed(STEAM_ID)
+	if seed_err ~= nil then
+		UNPRINTED_ERR = "could not get server seed: " .. seed_err .. CRITICAL_ERROR_ENDING
+		print(UNPRINTED_ERR)
+		return
+	end
+	SetWorldSeed(seed)
 end
 
 function OnModInit() end
@@ -131,9 +57,7 @@ function OnModInit() end
 function OnModPostInit() end
 
 -- Called when player entity has been created. Ensures chunks around the player have been loaded & created.
-function OnPlayerSpawned(player_entity)
-	KUMMITUS_ENTITY = EntityLoad("mods/noitaparty/files/kummitus.xml")
-end
+function OnPlayerSpawned(player_entity) end
 
 -- Called when the player dies
 function OnPlayerDied(player_entity) end
@@ -146,11 +70,28 @@ function OnWorldPreUpdate() end
 
 -- Called *every* time the game has finished updating the world
 function OnWorldPostUpdate()
+	if STEAM_ID == nil then
+		return
+	end
+
+	if UNPRINTED_ERR ~= nil then
+		GamePrintImportant("noitaparty error", UNPRINTED_ERR)
+		UNPRINTED_ERR = nil
+	end
+
+	local last_err = client.LastErr()
+	if client.LastErr() ~= nil then
+		GamePrint("noitaparty error: " .. last_err)
+		return
+	end
+
 	local player_entity = get_player_entity()
 	if player_entity ~= nil then
-		local player_x, player_y = EntityGetTransform(player_entity)
-		EntitySetTransform(KUMMITUS_ENTITY, player_x - 10, player_y - 10)
+		local x, y = EntityGetTransform(player_entity)
+		client.SendCCmdTransformPlayer(STEAM_ID, x, y)
 	end
+
+	-- TODO(blukai): draw other players !
 end
 
 -- Called when the biome config is loaded.

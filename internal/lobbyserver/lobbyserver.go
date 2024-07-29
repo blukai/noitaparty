@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"time"
 
@@ -80,6 +81,10 @@ func (ls *LobbyServer) Run(ctx context.Context) error {
 				now := time.Now()
 				for clientID, client := range ls.clients {
 					if now.Sub(client.lastHeartbeat) > time.Second*10 {
+						ls.logger.Debug().
+							Uint64("clientID", clientID).
+							Time("lastHeartbeat", client.lastHeartbeat).
+							Msg("removing client")
 						delete(ls.clients, clientID)
 					}
 				}
@@ -123,7 +128,8 @@ func (ls *LobbyServer) handleMsg(addr *net.UDPAddr) {
 	err := cmd.UnmarshalBinary(ls.buf)
 	debug.Assert(err == nil)
 	ls.logger.Debug().
-		Msgf("recv: %+#v", &cmd)
+		Any("cmd", &cmd).
+		Msgf("recv")
 
 	go func(cmd protocol.Cmd) {
 		var err error
@@ -148,6 +154,7 @@ func (ls *LobbyServer) sendBytes(bytes []byte, addr *net.UDPAddr) error {
 	ls.logger.Debug().
 		Str("bytes", fmt.Sprintf("%v", bytes)).
 		Msg("sendBytes")
+
 	_, err := ls.conn.WriteToUDP(bytes, addr)
 	return err
 }
@@ -178,15 +185,16 @@ func (ls *LobbyServer) handleCCmdPing(addr *net.UDPAddr) error {
 func (ls *LobbyServer) handleCCmdJoin(cCmdJoin *protocol.Cmd, addr *net.UDPAddr) error {
 	debug.Assert(cCmdJoin.Header.Cmd == protocol.CCmdJoin)
 
-	join, ok := cCmdJoin.Body.(*protocol.NetworkedJoin)
+	id, ok := cCmdJoin.Body.(*protocol.NetworkedUint64)
 	debug.Assert(ok)
 
-	// first who joins sets the seed (for now at least)
+	// TODO(blukai): controllable seed
+	// for now if there are no players generate a random seed
 	if len(ls.clients) == 0 {
-		ls.seed = int32(join.Seed)
+		ls.seed = rand.Int31()
 	}
 
-	ls.clients[uint64(join.ID)] = &client{
+	ls.clients[uint64(*id)] = &client{
 		addr:          addr,
 		lastHeartbeat: time.Now(),
 	}
