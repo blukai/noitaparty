@@ -21,9 +21,15 @@ const (
 const (
 	// NOTE(blukai): C stands for client
 	_ uint16 = iota
+	// respond with SCmdPong
 	CCmdPing
+	// respond with SCmdSetSeed
 	CCmdJoin
+	// no response
 	CCmdTransformPlayer
+	// no response; if client stopped sending heartbeat messages server must
+	// assume that client is not connected anymore
+	CCmdHeartbeat
 
 	CCmdMax
 )
@@ -127,21 +133,22 @@ func (cmd *Cmd) UnmarshalBinary(data []byte) error {
 		switch cmd.Header.Cmd {
 		// client
 		case CCmdJoin:
-			body = ptr.To(NetworkedInt32(0))
+			body = &NetworkedJoin{}
 		case CCmdTransformPlayer:
-			body = ptr.To(NetworkedInt32Vector2{})
+			body = &NetworkedTransformPlayer{}
 		// server
 		case SCmdSetSeed:
 			body = ptr.To(NetworkedInt32(0))
 		case SCmdTransformPlayer:
-			body = ptr.To(NetworkedPlayer{})
+			body = &NetworkedTransformPlayer{}
 		}
 		if body != nil {
 			bodyBytes := data[CmdHeaderSize : CmdHeaderSize+cmd.Header.Size]
-			err := cmd.Body.UnmarshalBinary(bodyBytes)
+			err := body.UnmarshalBinary(bodyBytes)
 			if err != nil {
 				return fmt.Errorf("could not unmarshal body: %w", err)
 			}
+			cmd.Body = body
 		}
 	}
 
@@ -156,29 +163,29 @@ var (
 )
 
 func (n *NetworkedInt32) MarshalBinary() ([]byte, error) {
-	return byteorder.Htonl(zigzag.EncodeInt32(int32(*n))), nil
+	return byteorder.Htonl(zigzag.Encode32(int32(*n))), nil
 }
 
 func (n *NetworkedInt32) UnmarshalBinary(data []byte) error {
 	debug.Assert(len(data) == 4)
-	*n = NetworkedInt32(zigzag.ZigZagDecodeInt32(byteorder.Ntohl(data)))
+	*n = NetworkedInt32(zigzag.Decode32(byteorder.Ntohl(data)))
 	return nil
 }
 
-type NetworkedUint32 uint32
+type NetworkedUint64 uint64
 
 var (
-	_ encoding.BinaryMarshaler   = (*NetworkedUint32)(nil)
-	_ encoding.BinaryUnmarshaler = (*NetworkedUint32)(nil)
+	_ encoding.BinaryMarshaler   = (*NetworkedUint64)(nil)
+	_ encoding.BinaryUnmarshaler = (*NetworkedUint64)(nil)
 )
 
-func (n *NetworkedUint32) MarshalBinary() ([]byte, error) {
-	return byteorder.Htonl(uint32(*n)), nil
+func (n *NetworkedUint64) MarshalBinary() ([]byte, error) {
+	return byteorder.Htonll(uint64(*n)), nil
 }
 
-func (n *NetworkedUint32) UnmarshalBinary(data []byte) error {
-	debug.Assert(len(data) == 4)
-	*n = NetworkedUint32(byteorder.Ntohl(data))
+func (n *NetworkedUint64) UnmarshalBinary(data []byte) error {
+	debug.Assert(len(data) == 8)
+	*n = NetworkedUint64(byteorder.Ntohll(data))
 	return nil
 }
 
@@ -218,12 +225,8 @@ func (n *NetworkedInt32Vector2) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
-type NetworkedPlayer struct {
-	// ID is uint32 representation of player's ip address, which is
-	// completely garbage idea.
-	//
-	// TODO(blukai): figure out player identities
-	ID        NetworkedUint32
+type NetworkedTransformPlayer struct {
+	ID        NetworkedUint64
 	Transform NetworkedInt32Vector2
 }
 
@@ -232,7 +235,7 @@ var (
 	_ encoding.BinaryUnmarshaler = (*NetworkedInt32Vector2)(nil)
 )
 
-func (n *NetworkedPlayer) MarshalBinary() ([]byte, error) {
+func (n *NetworkedTransformPlayer) MarshalBinary() ([]byte, error) {
 	buf := bytes.Buffer{}
 
 	id, err := n.ID.MarshalBinary()
@@ -246,13 +249,49 @@ func (n *NetworkedPlayer) MarshalBinary() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (n *NetworkedPlayer) UnmarshalBinary(data []byte) error {
-	debug.Assert(len(data) == 12)
+func (n *NetworkedTransformPlayer) UnmarshalBinary(data []byte) error {
+	debug.Assert(len(data) == 16)
 
-	err := n.ID.UnmarshalBinary(data[0:4])
+	err := n.ID.UnmarshalBinary(data[0:8])
 	debug.Assert(err == nil)
 
-	err = n.Transform.UnmarshalBinary(data[4:12])
+	err = n.Transform.UnmarshalBinary(data[8:16])
+	debug.Assert(err == nil)
+
+	return nil
+}
+
+type NetworkedJoin struct {
+	ID   NetworkedUint64
+	Seed NetworkedInt32
+}
+
+var (
+	_ encoding.BinaryMarshaler   = (*NetworkedInt32Vector2)(nil)
+	_ encoding.BinaryUnmarshaler = (*NetworkedInt32Vector2)(nil)
+)
+
+func (n *NetworkedJoin) MarshalBinary() ([]byte, error) {
+	buf := bytes.Buffer{}
+
+	id, err := n.ID.MarshalBinary()
+	debug.Assert(err == nil)
+	buf.Write(id)
+
+	seed, err := n.Seed.MarshalBinary()
+	debug.Assert(err == nil)
+	buf.Write(seed)
+
+	return buf.Bytes(), nil
+}
+
+func (n *NetworkedJoin) UnmarshalBinary(data []byte) error {
+	debug.Assert(len(data) == 12)
+
+	err := n.ID.UnmarshalBinary(data[0:8])
+	debug.Assert(err == nil)
+
+	err = n.Seed.UnmarshalBinary(data[8:12])
 	debug.Assert(err == nil)
 
 	return nil

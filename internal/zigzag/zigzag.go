@@ -26,10 +26,18 @@ package zigzag
 //        >> encode >>
 //        << decode <<
 
-func EncodeInt32(n int32) uint32 {
+func Encode32(n int32) uint32 {
 	return uint32((n << 1) ^ (n >> 31))
 }
 
-func ZigZagDecodeInt32(n uint32) int32 {
-	return int32((n >> 1) ^ -(n & 1))
+func Decode32(n uint32) int32 {
+	return int32(n>>1) ^ -int32(n&1)
+}
+
+func Encode64(n int64) uint64 {
+	return uint64((n << 1) ^ (n >> 63))
+}
+
+func Decode64(n uint64) int64 {
+	return int64(n>>1) ^ -int64(n&1)
 }

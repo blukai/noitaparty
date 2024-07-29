@@ -7,18 +7,25 @@ import (
 	"net"
 	"time"
 
-	"github.com/blukai/noitaparty/internal/byteorder"
 	"github.com/blukai/noitaparty/internal/debug"
 	"github.com/blukai/noitaparty/internal/protocol"
+	"github.com/blukai/noitaparty/internal/ptr"
+	"github.com/hashicorp/go-multierror"
 	"github.com/phuslu/log"
 )
 
+type client struct {
+	addr          *net.UDPAddr
+	lastHeartbeat time.Time
+}
+
 type LobbyServer struct {
-	conn   *net.UDPConn
-	buf    []byte
+	conn *net.UDPConn
+	buf  []byte
+
 	logger *log.Logger
 
-	clients map[uint32]*net.UDPAddr
+	clients map[uint64]*client
 	seed    int32
 }
 
@@ -42,9 +49,13 @@ func NewLobbyServer(network, address string, logger *log.Logger) (*LobbyServer, 
 	}
 
 	ls := &LobbyServer{
-		conn:   conn,
-		buf:    make([]byte, protocol.CmdMaxSize),
+		conn: conn,
+		buf:  make([]byte, protocol.CmdMaxSize),
+
 		logger: logger,
+
+		clients: make(map[uint64]*client),
+		seed:    0,
 	}
 
 	return ls, nil
@@ -59,9 +70,28 @@ func (ls *LobbyServer) Conn() *net.UDPConn {
 }
 
 func (ls *LobbyServer) Run(ctx context.Context) error {
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				now := time.Now()
+				for clientID, client := range ls.clients {
+					if now.Sub(client.lastHeartbeat) > time.Second*10 {
+						delete(ls.clients, clientID)
+					}
+				}
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
+			ls.logger.Debug().
+				Msg("done")
 			return ls.conn.Close()
 		default:
 			err := ls.conn.SetReadDeadline(time.Now().Add(time.Second))
@@ -93,7 +123,7 @@ func (ls *LobbyServer) handleMsg(addr *net.UDPAddr) {
 	err := cmd.UnmarshalBinary(ls.buf)
 	debug.Assert(err == nil)
 	ls.logger.Debug().
-		Msgf("recv: %+v", cmd)
+		Msgf("recv: %+#v", &cmd)
 
 	go func(cmd protocol.Cmd) {
 		var err error
@@ -102,9 +132,9 @@ func (ls *LobbyServer) handleMsg(addr *net.UDPAddr) {
 		case protocol.CCmdPing:
 			err = ls.handleCCmdPing(addr)
 		case protocol.CCmdJoin:
-			err = ls.handleCCmdJoin(addr, &cmd)
+			err = ls.handleCCmdJoin(&cmd, addr)
 		case protocol.CCmdTransformPlayer:
-			err = ls.handleCCmdTransformPlayer(addr, &cmd)
+			err = ls.handleCCmdTransformPlayer(&cmd)
 		}
 
 		if err != nil {
@@ -114,68 +144,93 @@ func (ls *LobbyServer) handleMsg(addr *net.UDPAddr) {
 	}(cmd)
 }
 
-func (ls *LobbyServer) handleCCmdPing(addr *net.UDPAddr) error {
-	header := protocol.CmdHeader{Cmd: protocol.SCmdPong}
-	headerBytes, err := header.MarshalBinary()
-	debug.Assert(err == nil)
-
-	_, err = ls.conn.WriteToUDP(headerBytes, addr)
+func (ls *LobbyServer) sendBytes(bytes []byte, addr *net.UDPAddr) error {
+	ls.logger.Debug().
+		Str("bytes", fmt.Sprintf("%v", bytes)).
+		Msg("sendBytes")
+	_, err := ls.conn.WriteToUDP(bytes, addr)
 	return err
 }
 
-func id(addr *net.UDPAddr) uint32 {
-	// NOTE(blukai): IPv4 constructor sets the last 4 bytes, see
-	// https://cs.opensource.google/go/go/+/refs/tags/go1.22.5:src/net/ip.go;l=52
-	return byteorder.Ntohl(addr.IP[12:16])
-}
+func (ls *LobbyServer) sendCmd(cmd protocol.Cmd, addr *net.UDPAddr) error {
+	ls.logger.Debug().
+		Any("cmd", &cmd).
+		Any("addr", addr).
+		Msg("sendCmd")
 
-func (ls *LobbyServer) handleCCmdJoin(addr *net.UDPAddr, cmd *protocol.Cmd) error {
-	debug.Assert(cmd.Header.Cmd == protocol.CCmdJoin)
-
-	seed, ok := cmd.Body.(*protocol.NetworkedInt32)
-	debug.Assert(ok)
-
-	if len(ls.clients) == 0 {
-		ls.seed = int32(*seed)
-	}
-
-	ls.clients[id(addr)] = addr
-
-	return nil
-}
-
-func (ls *LobbyServer) handleCCmdTransformPlayer(addr *net.UDPAddr, cmd *protocol.Cmd) error {
-	debug.Assert(cmd.Header.Cmd == protocol.CCmdTransformPlayer)
-
-	transform, ok := cmd.Body.(*protocol.NetworkedInt32Vector2)
-	debug.Assert(ok)
-
-	senderID := id(addr)
-
-	sendCmd := protocol.Cmd{
-		Header: &protocol.CmdHeader{
-			Cmd:  protocol.SCmdTransformPlayer,
-			Size: 12,
-		},
-		Body: &protocol.NetworkedPlayer{
-			ID:        protocol.NetworkedUint32(senderID),
-			Transform: *transform,
-		},
-	}
-	sendCmdBytes, err := sendCmd.MarshalBinary()
+	bytes, err := cmd.MarshalBinary()
 	debug.Assert(err == nil)
 
-	for recverID, recverAddr := range ls.clients {
-		if recverID == senderID {
+	return ls.sendBytes(bytes, addr)
+}
+
+func (ls *LobbyServer) handleCCmdPing(addr *net.UDPAddr) error {
+	sCmdPong := protocol.Cmd{
+		Header: &protocol.CmdHeader{
+			Cmd:  protocol.SCmdPong,
+			Size: 0,
+		},
+		Body: nil,
+	}
+	return ls.sendCmd(sCmdPong, addr)
+}
+
+func (ls *LobbyServer) handleCCmdJoin(cCmdJoin *protocol.Cmd, addr *net.UDPAddr) error {
+	debug.Assert(cCmdJoin.Header.Cmd == protocol.CCmdJoin)
+
+	join, ok := cCmdJoin.Body.(*protocol.NetworkedJoin)
+	debug.Assert(ok)
+
+	// first who joins sets the seed (for now at least)
+	if len(ls.clients) == 0 {
+		ls.seed = int32(join.Seed)
+	}
+
+	ls.clients[uint64(join.ID)] = &client{
+		addr:          addr,
+		lastHeartbeat: time.Now(),
+	}
+
+	sCmdSetSeed := protocol.Cmd{
+		Header: &protocol.CmdHeader{
+			Cmd:  protocol.SCmdSetSeed,
+			Size: 4,
+		},
+		Body: ptr.To(protocol.NetworkedInt32(ls.seed)),
+	}
+	return ls.sendCmd(sCmdSetSeed, addr)
+}
+
+func (ls *LobbyServer) handleCCmdTransformPlayer(cCmdTransformPlayer *protocol.Cmd) error {
+	debug.Assert(cCmdTransformPlayer.Header.Cmd == protocol.CCmdTransformPlayer)
+
+	transformPlayer, ok := cCmdTransformPlayer.Body.(*protocol.NetworkedTransformPlayer)
+	debug.Assert(ok)
+
+	sCmdTransformPlayer := protocol.Cmd{
+		Header: &protocol.CmdHeader{
+			Cmd:  protocol.SCmdTransformPlayer,
+			Size: 16,
+		},
+		Body: transformPlayer,
+	}
+	sCmdTransformPlayerBytes, err := sCmdTransformPlayer.MarshalBinary()
+	debug.Assert(err == nil)
+
+	var errs error
+	for clientID, client := range ls.clients {
+		// don't send to the sender
+		if clientID == uint64(transformPlayer.ID) {
 			continue
 		}
 
-		_, err := ls.conn.WriteToUDP(sendCmdBytes, recverAddr)
+		err := ls.sendBytes(sCmdTransformPlayerBytes, client.addr)
 		if err != nil {
-			// TODO: accumulate errors, and maybe remove clients who
-			// we are failing to write to!
+			ls.logger.Error().
+				Msgf("could not send player transform to %v: %v", client, err)
+
+			errs = multierror.Append(errs, err)
 		}
 	}
-
-	return nil
+	return errs
 }

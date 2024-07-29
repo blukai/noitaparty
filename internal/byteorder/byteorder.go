@@ -14,15 +14,19 @@ import (
 // l  = long      = 32 bit
 // ll = long long = 64 bit
 
-func Htonl(val uint32) []byte {
-	buf := make([]byte, 4)
-	binary.BigEndian.PutUint32(buf, val)
-	return buf
-}
-
 func Htons(val uint16) []byte {
 	buf := make([]byte, 2)
 	binary.BigEndian.PutUint16(buf, val)
+	return buf
+}
+
+func Ntohs(buf []byte) uint16 {
+	return binary.BigEndian.Uint16(buf)
+}
+
+func Htonl(val uint32) []byte {
+	buf := make([]byte, 4)
+	binary.BigEndian.PutUint32(buf, val)
 	return buf
 }
 
@@ -30,6 +34,12 @@ func Ntohl(buf []byte) uint32 {
 	return binary.BigEndian.Uint32(buf)
 }
 
-func Ntohs(buf []byte) uint16 {
-	return binary.BigEndian.Uint16(buf)
+func Htonll(val uint64) []byte {
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, val)
+	return buf
+}
+
+func Ntohll(buf []byte) uint64 {
+	return binary.BigEndian.Uint64(buf)
 }

@@ -7,3 +7,8 @@ require (
 	github.com/matryer/is v1.4.1
 	github.com/phuslu/log v1.0.107
 )
+
+require (
+	github.com/hashicorp/errwrap v1.1.0 // indirect
+	github.com/hashicorp/go-multierror v1.1.1 // indirect
+)
