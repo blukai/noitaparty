@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/blukai/noitaparty/internal/debug"
@@ -27,8 +28,8 @@ type LobbyClient struct {
 	sendCh chan sendChPayload
 	recvCh chan protocol.Cmd
 
-	writeTimeout time.Duration
-	readTimeout  time.Duration
+	sendTimeout time.Duration
+	recvTimeout time.Duration
 
 	// NOTE(blukai): key is player's id
 	players map[protocol.NetworkedUint64]*protocol.NetworkedTransformPlayer
@@ -62,8 +63,8 @@ func NewLobbyClient(network, address string, logger *log.Logger) (*LobbyClient, 
 		sendCh: make(chan sendChPayload),
 		recvCh: make(chan protocol.Cmd),
 
-		writeTimeout: time.Second,
-		readTimeout:  time.Second,
+		sendTimeout: time.Second,
+		recvTimeout: time.Second,
 
 		players: make(map[protocol.NetworkedUint64]*protocol.NetworkedTransformPlayer),
 	}
@@ -84,7 +85,7 @@ func (lc *LobbyClient) runSendCh(ctx context.Context) {
 			cmdBytes, err := payload.cmd.MarshalBinary()
 			debug.Assert(err == nil)
 
-			err = lc.conn.SetWriteDeadline(time.Now().Add(lc.writeTimeout))
+			err = lc.conn.SetWriteDeadline(time.Now().Add(lc.sendTimeout))
 			debug.Assert(err == nil)
 
 			_, err = lc.conn.Write(cmdBytes)
@@ -110,7 +111,7 @@ func (lc *LobbyClient) runRecvCh(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
-			err := lc.conn.SetReadDeadline(time.Now().Add(lc.readTimeout))
+			err := lc.conn.SetReadDeadline(time.Now().Add(lc.recvTimeout))
 			debug.Assert(err == nil)
 
 			n, _, err := lc.conn.ReadFromUDP(lc.readBuf)
@@ -157,38 +158,49 @@ func (lc *LobbyClient) runRecvCh(ctx context.Context) {
 	}
 }
 
-func (lc *LobbyClient) runHeartbeat(ctx context.Context) {
-	ticker := time.NewTicker(time.Second)
+func (lc *LobbyClient) runKeepAlive(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			cCmdHeartbeat := protocol.Cmd{
+		// send keep alive messages periodically if no other messages
+		// are being sent
+		case <-time.After(time.Second * 5):
+			sCmdKeepAlive := protocol.Cmd{
 				Header: &protocol.CmdHeader{
-					Cmd:  protocol.CCmdHeartbeat,
-					Size: 0,
+					Cmd:  protocol.CCmdKeepAlive,
+					Size: 4,
 				},
 				Body: nil,
 			}
-			lc.sendCmd(cCmdHeartbeat)
+			lc.sendCmd(sCmdKeepAlive)
 		}
 	}
 }
 
 func (lc *LobbyClient) Run(ctx context.Context) error {
-	go lc.runSendCh(ctx)
-	go lc.runRecvCh(ctx)
+	wg := &sync.WaitGroup{}
 
-	go lc.runHeartbeat(ctx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		lc.runSendCh(ctx)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		lc.runRecvCh(ctx)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		lc.runKeepAlive(ctx)
+	}()
 
-	for {
-		select {
-		case <-ctx.Done():
-			lc.logger.Debug().
-				Msg("done")
-			return lc.conn.Close()
-		}
+	select {
+	case <-ctx.Done():
+		wg.Wait()
+		return lc.conn.Close()
 	}
 }
 
@@ -203,7 +215,7 @@ func (lc *LobbyClient) sendCmd(cmd protocol.Cmd) <-chan error {
 
 func (lc *LobbyClient) recvCmd() (*protocol.Cmd, error) {
 	select {
-	case <-time.After(lc.readTimeout):
+	case <-time.After(lc.recvTimeout):
 		return nil, fmt.Errorf("timeout reached")
 	case cmd := <-lc.recvCh:
 		return &cmd, nil
@@ -224,7 +236,7 @@ func (lc *LobbyClient) SendCCmdPing() error {
 
 	sCmdPong, err := lc.recvCmd()
 	if err != nil {
-		return fmt.Errorf("no pong: %w", err)
+		return fmt.Errorf("could not recv: %w", err)
 	}
 	if sCmdPong.Header.Cmd != protocol.SCmdPong {
 		return fmt.Errorf(

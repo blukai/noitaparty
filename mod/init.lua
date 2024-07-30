@@ -6,11 +6,14 @@ local client = dofile_once("mods/noitaparty/files/client.lua")
 -- NOTE(blukai): might need this later
 -- dofile_once("data/scripts/lib/utilities.lua")
 
-STEAM_ID = nil
+local STEAM_ID = nil
 
 -- TODO(blukai): find a nicer way to do error reporting, more sane
-UNPRINTED_ERR = nil
-CRITICAL_ERROR_ENDING = ". can't continue. seek help!"
+local UNPRINTED_ERR = nil
+local CRITICAL_ERROR_ENDING = ". can't continue. seek help!"
+
+local LAST_PLAYER_X = nil
+local LAST_PLAYER_Y = nil
 
 -- TODO(blukai): introduce some kind of global state "object" that would be more
 -- convenient to deal with then a bunch of individual globals.
@@ -88,7 +91,13 @@ function OnWorldPostUpdate()
 	local player_entity = get_player_entity()
 	if player_entity ~= nil then
 		local x, y = EntityGetTransform(player_entity)
-		client.SendCCmdTransformPlayer(STEAM_ID, x, y)
+		-- NOTE(blukai): it turns out that x and y are actually floats..
+		-- do we care about precision?
+		x, y = math.floor(x), math.floor(y)
+		if x ~= LAST_PLAYER_X or y ~= LAST_PLAYER_Y then
+			client.SendCCmdTransformPlayer(STEAM_ID, x, y)
+			LAST_PLAYER_X, LAST_PLAYER_Y = x, y
+		end
 	end
 
 	-- TODO(blukai): draw other players !

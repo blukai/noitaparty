@@ -27,9 +27,9 @@ const (
 	CCmdJoin
 	// no response
 	CCmdTransformPlayer
-	// no response; if client stopped sending heartbeat messages server must
-	// assume that client is not connected anymore
-	CCmdHeartbeat
+	// no response; if client stopped sending keep alive messages server
+	// must assume that client is not connected anymore
+	CCmdKeepAlive
 
 	CCmdMax
 )
@@ -79,6 +79,8 @@ func (h *CmdHeader) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
+// TODO: get rid of CmdBody and define bodies for each cmd + command
+// constructors
 type CmdBody interface {
 	encoding.BinaryMarshaler
 	encoding.BinaryUnmarshaler

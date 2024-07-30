@@ -66,12 +66,7 @@ function mod.SendCCmdJoinRecvSCmdSetSeed(id)
 end
 
 -- void SendCCmdTransformPlayer(GoUint64 id, GoInt32 x, GoInt32 y);
-function mod.SendCCmdTransformPlayer(id, x, y)
-	local co = coroutine.create(function()
-		client.SendCCmdTransformPlayer(id, x, y)
-	end)
-	coroutine.resume(co)
-end
+mod.SendCCmdTransformPlayer = client.SendCCmdTransformPlayer
 
 -- GoSlice GetPlayers();
 function mod.GetPlayers()

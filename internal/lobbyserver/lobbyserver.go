@@ -6,18 +6,26 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/blukai/noitaparty/internal/debug"
 	"github.com/blukai/noitaparty/internal/protocol"
 	"github.com/blukai/noitaparty/internal/ptr"
+	"github.com/cespare/xxhash/v2"
 	"github.com/hashicorp/go-multierror"
 	"github.com/phuslu/log"
 )
 
+type addrKey uint64
+
+func makeAddrKey(addr *net.UDPAddr) addrKey {
+	return addrKey(xxhash.Sum64String(addr.String()))
+}
+
 type client struct {
-	addr          *net.UDPAddr
-	lastHeartbeat time.Time
+	addr     *net.UDPAddr
+	lastSeen time.Time
 }
 
 type LobbyServer struct {
@@ -26,7 +34,7 @@ type LobbyServer struct {
 
 	logger *log.Logger
 
-	clients map[uint64]*client
+	clients map[addrKey]*client
 	seed    int32
 }
 
@@ -55,49 +63,24 @@ func NewLobbyServer(network, address string, logger *log.Logger) (*LobbyServer, 
 
 		logger: logger,
 
-		clients: make(map[uint64]*client),
+		clients: make(map[addrKey]*client),
 		seed:    0,
 	}
 
 	return ls, nil
 }
 
+// Addr can be useful to retreive server's address when LobbyServer was
+// constructed with ":0".
 func (ls *LobbyServer) Addr() *net.UDPAddr {
 	return ls.conn.LocalAddr().(*net.UDPAddr)
 }
 
-func (ls *LobbyServer) Conn() *net.UDPConn {
-	return ls.conn
-}
-
-func (ls *LobbyServer) Run(ctx context.Context) error {
-	go func() {
-		ticker := time.NewTicker(time.Second)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				now := time.Now()
-				for clientID, client := range ls.clients {
-					if now.Sub(client.lastHeartbeat) > time.Second*10 {
-						ls.logger.Debug().
-							Uint64("clientID", clientID).
-							Time("lastHeartbeat", client.lastHeartbeat).
-							Msg("removing client")
-						delete(ls.clients, clientID)
-					}
-				}
-			}
-		}
-	}()
-
+func (ls *LobbyServer) runRecv(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			ls.logger.Debug().
-				Msg("done")
-			return ls.conn.Close()
+			return
 		default:
 			err := ls.conn.SetReadDeadline(time.Now().Add(time.Second))
 			debug.Assert(err == nil)
@@ -118,36 +101,95 @@ func (ls *LobbyServer) Run(ctx context.Context) error {
 				continue
 			}
 
-			ls.handleMsg(addr)
+			cmd := protocol.Cmd{}
+			if err := cmd.UnmarshalBinary(ls.buf); err != nil {
+				ls.logger.Error().
+					Str("bytes", fmt.Sprintf("%v", ls.buf[0:n])).
+					Msgf("could not unmarshal cmd: %v", err)
+				continue
+			}
+
+			client, ok := ls.clients[makeAddrKey(addr)]
+			// client is created in handleCCmdJoin func
+			if ok {
+				client.lastSeen = time.Now()
+			}
+
+			ls.logger.Debug().
+				Any("cmd", &cmd).
+				Any("addr", addr).
+				Msgf("recv")
+
+			// TODO(blukai): can this spawn a shit ton of go routines?
+			go ls.handleCmd(cmd, addr)
 		}
 	}
 }
 
-func (ls *LobbyServer) handleMsg(addr *net.UDPAddr) {
-	cmd := protocol.Cmd{}
-	err := cmd.UnmarshalBinary(ls.buf)
-	debug.Assert(err == nil)
-	ls.logger.Debug().
-		Any("cmd", &cmd).
-		Msgf("recv")
-
-	go func(cmd protocol.Cmd) {
-		var err error
-
-		switch cmd.Header.Cmd {
-		case protocol.CCmdPing:
-			err = ls.handleCCmdPing(addr)
-		case protocol.CCmdJoin:
-			err = ls.handleCCmdJoin(&cmd, addr)
-		case protocol.CCmdTransformPlayer:
-			err = ls.handleCCmdTransformPlayer(&cmd)
+// TODO(blukai): how to handle re-connects? get rid of join message? send seed
+// together with probably https "authentication" response?
+func (ls *LobbyServer) runClientEvictor(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+			now := time.Now()
+			for clientAddrKey, client := range ls.clients {
+				if now.Sub(client.lastSeen) > time.Second*10 {
+					delete(ls.clients, clientAddrKey)
+					ls.logger.Debug().
+						Str("client", fmt.Sprintf("%+#v", client)).
+						Msg("evicted client")
+				}
+			}
 		}
+	}
+}
 
-		if err != nil {
-			ls.logger.Error().
-				Msgf("error handling message (addr: %s; cmd: %v)", addr.String(), cmd)
-		}
-	}(cmd)
+func (ls *LobbyServer) Run(ctx context.Context) error {
+	wg := &sync.WaitGroup{}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ls.runRecv(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ls.runClientEvictor(ctx)
+	}()
+
+	select {
+	case <-ctx.Done():
+		wg.Wait()
+		return ls.conn.Close()
+	}
+}
+
+func (ls *LobbyServer) handleCmd(cmd protocol.Cmd, addr *net.UDPAddr) {
+	var err error
+
+	switch cmd.Header.Cmd {
+	case protocol.CCmdPing:
+		err = ls.handleCCmdPing(addr)
+	case protocol.CCmdJoin:
+		err = ls.handleCCmdJoin(&cmd, addr)
+	case protocol.CCmdTransformPlayer:
+		err = ls.handleCCmdTransformPlayer(&cmd, addr)
+	case protocol.CCmdKeepAlive:
+		// ignore keep alive because lastSeen is being maintained by
+		// runRecv func
+	default:
+		debug.Assert(false, fmt.Sprintf("unhandled cmd: %d", cmd.Header.Cmd))
+	}
+
+	if err != nil {
+		ls.logger.Error().
+			Msgf("error handling message (addr: %s; cmd: %v)", addr.String(), cmd)
+	}
 }
 
 func (ls *LobbyServer) sendBytes(bytes []byte, addr *net.UDPAddr) error {
@@ -187,16 +229,24 @@ func (ls *LobbyServer) handleCCmdJoin(cCmdJoin *protocol.Cmd, addr *net.UDPAddr)
 
 	id, ok := cCmdJoin.Body.(*protocol.NetworkedUint64)
 	debug.Assert(ok)
+	// TODO(blukai): get rid of id if it'll end up not being needed
+	_ = id
 
 	// TODO(blukai): controllable seed
+	//
 	// for now if there are no players generate a random seed
 	if len(ls.clients) == 0 {
 		ls.seed = rand.Int31()
 	}
 
-	ls.clients[uint64(*id)] = &client{
-		addr:          addr,
-		lastHeartbeat: time.Now(),
+	// TODO: some form of authentication (but keep stuff anonymized).
+	//
+	// maybe require clients to receive a token over https or in some other
+	// secure way and then send it with each udp packet or/and use it to
+	// encrypt messages (on client).
+	ls.clients[makeAddrKey(addr)] = &client{
+		addr:     addr,
+		lastSeen: time.Now(),
 	}
 
 	sCmdSetSeed := protocol.Cmd{
@@ -209,7 +259,10 @@ func (ls *LobbyServer) handleCCmdJoin(cCmdJoin *protocol.Cmd, addr *net.UDPAddr)
 	return ls.sendCmd(sCmdSetSeed, addr)
 }
 
-func (ls *LobbyServer) handleCCmdTransformPlayer(cCmdTransformPlayer *protocol.Cmd) error {
+func (ls *LobbyServer) handleCCmdTransformPlayer(
+	cCmdTransformPlayer *protocol.Cmd,
+	addr *net.UDPAddr,
+) error {
 	debug.Assert(cCmdTransformPlayer.Header.Cmd == protocol.CCmdTransformPlayer)
 
 	transformPlayer, ok := cCmdTransformPlayer.Body.(*protocol.NetworkedTransformPlayer)
@@ -225,10 +278,12 @@ func (ls *LobbyServer) handleCCmdTransformPlayer(cCmdTransformPlayer *protocol.C
 	sCmdTransformPlayerBytes, err := sCmdTransformPlayer.MarshalBinary()
 	debug.Assert(err == nil)
 
+	// broadcast to everyone else
+	addrKey := makeAddrKey(addr)
 	var errs error
-	for clientID, client := range ls.clients {
+	for clientAddrKey, client := range ls.clients {
 		// don't send to the sender
-		if clientID == uint64(transformPlayer.ID) {
+		if clientAddrKey == addrKey {
 			continue
 		}
 
