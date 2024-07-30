@@ -1,0 +1,184 @@
+<!--
+NOTE(blukai):
+- all of this is copypasted from unpacked data.wak in
+~/.local/share/Steam/steamapps/compatdata/881100/pfx/drive_c/users/steamuser/AppData/LocalLow/Nolla_Games_Noita/data/entities/player_base.xml;
+- all the things that that didn't look like sprites were removed
+
+TODO(blukai): figure out how to sync player wands, status effects, etc.
+-->
+
+<Entity>
+  <HotspotComponent
+      _tags="hand"
+      sprite_hotspot_name="hand"
+  ></HotspotComponent>
+
+  <HotspotComponent
+    _tags="shoot_pos"
+    offset.x="0"
+    offset.y="-2"
+  ></HotspotComponent>
+
+  <HotspotComponent
+    _tags="kick_pos"
+    offset.x="0"
+    offset.y="2"
+  ></HotspotComponent>
+  
+  <HotspotComponent
+    _tags="crouch_sensor"
+    offset.x="0"
+    offset.y="-14"
+  ></HotspotComponent>
+
+  <SpriteAnimatorComponent>
+  </SpriteAnimatorComponent>
+
+  <SpriteComponent 
+    _tags="character,lukki_disable" 
+    alpha="1" 
+    image_file="data/enemies_gfx/player.xml" 
+    next_rect_animation="" 
+    offset_x="6" 
+    offset_y="14" 
+    rect_animation="walk" 
+    z_index="0.6"
+  ></SpriteComponent>
+  
+  <SpriteComponent 
+    _tags="character,lukki_enable"
+    _enabled="0"
+    alpha="1" 
+    image_file="data/enemies_gfx/player_lukky.xml" 
+    next_rect_animation="" 
+    offset_x="6" 
+    offset_y="14" 
+    rect_animation="walk" 
+    z_index="0.6"
+  ></SpriteComponent>
+
+  <HotspotComponent
+    _tags="right_arm_root"
+    sprite_hotspot_name="right_arm_start"
+    transform_with_scale="1"
+  ></HotspotComponent>
+
+  <Entity name="arm_r" tags="player_arm_r">
+
+    <SpriteComponent 
+      _tags="with_item" 
+      alpha="1" 
+      image_file="data/enemies_gfx/player_arm.xml" 
+      next_rect_animation="" 
+      rect_animation="default" 
+      z_index="0.59"
+    ></SpriteComponent>
+
+    <InheritTransformComponent
+      parent_hotspot_tag="right_arm_root"
+      only_position="1"
+    ></InheritTransformComponent>  
+
+    <HotspotComponent
+      _tags="hand"
+      sprite_hotspot_name="hand"
+      transform_with_scale="1"
+    ></HotspotComponent>
+
+  </Entity>
+
+  <!--
+  
+  NOTE(blukai): atm this causes an issue, for example if other player gets wet
+  a large water drop is being rendered not above the player, but on top of it
+  (/body + head)
+
+  <SpriteStainsComponent>
+  </SpriteStainsComponent>
+
+  <StatusEffectDataComponent>
+  </StatusEffectDataComponent>
+
+  -->
+
+  <!-- cape -->
+
+  <HotspotComponent
+      _tags="cape_root"
+      sprite_hotspot_name="cape" >
+  </HotspotComponent>
+
+  <Entity name="cape">  
+      <Base file="data/entities/verlet_chains/cape/cape.xml">
+      </Base>  
+  </Entity>
+  
+  <!-- belt -->
+  
+  <HotspotComponent
+    _tags="belt_root"
+    sprite_hotspot_name="belt"
+  ></HotspotComponent>
+  
+  <!-- --> 
+
+	<SpriteComponent 
+		_tags="character,player_amulet" 
+		alpha="1" 
+		image_file="data/enemies_gfx/player_amulet.xml" 
+		next_rect_animation="" 
+		offset_x="6" 
+		offset_y="14" 
+		rect_animation="walk" 
+		z_index="0.59"
+		_enabled="0"
+	></SpriteComponent>
+	
+	<SpriteComponent 
+		_tags="character,player_amulet_gem" 
+		alpha="1" 
+		image_file="data/enemies_gfx/player_amulet_gem.xml" 
+		next_rect_animation="" 
+		offset_x="6" 
+		offset_y="14" 
+		rect_animation="walk" 
+		z_index="0.58"
+		_enabled="0"
+	></SpriteComponent>
+	
+	<SpriteComponent 
+		_tags="character,player_hat"
+		alpha="1" 
+		image_file="data/enemies_gfx/player_hat.xml" 
+		next_rect_animation="" 
+		offset_x="6" 
+		offset_y="14" 
+		rect_animation="walk" 
+		z_index="0.59"
+		_enabled="0"
+	></SpriteComponent>
+	
+	<SpriteComponent 
+		_tags="character,player_hat2"
+		alpha="1" 
+		image_file="data/enemies_gfx/player_hat2.xml" 
+		next_rect_animation="" 
+		offset_x="6" 
+		offset_y="14" 
+		rect_animation="walk" 
+		z_index="0.58"
+		_enabled="0"
+	></SpriteComponent>
+	
+	<SpriteComponent 
+		_tags="character,player_hat2_shadow"
+		alpha="1" 
+		image_file="data/enemies_gfx/player_hat2_shadow.xml" 
+		next_rect_animation="" 
+		offset_x="6" 
+		offset_y="14" 
+		rect_animation="walk" 
+		z_index="0.58"
+		_enabled="0"
+	></SpriteComponent>
+</Entity>

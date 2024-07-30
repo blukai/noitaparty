@@ -17,14 +17,10 @@ local CRITICAL_ERROR_ENDING = ". can't continue. seek help!"
 local LAST_PLAYER_X = nil
 local LAST_PLAYER_Y = nil
 
+local OTHER_PLAYER_ENTITIES = {}
+
 -- TODO(blukai): introduce some kind of global state "object" that would be more
 -- convenient to deal with then a bunch of individual globals.
--- KUMMITUS_ENTITY = nil
--- KUMMITUS_ENTITY = EntityLoad("mods/noitaparty/files/kummitus.xml")
--- local player_x, player_y = EntityGetTransform(player_entity)
--- EntitySetTransform(KUMMITUS_ENTITY, player_x - 10, player_y - 10)
-
-local OTHER_PLAYER_ENTITIES = {}
 
 local function get_player_entity()
 	local players = EntityGetWithTag("player_unit")
@@ -43,7 +39,9 @@ function OnModPreInit()
 		return
 	end
 
-	local connect_err = client.Connect("udp4", "127.0.0.1:8008")
+	-- TODO(blukai): unhardcode server address, make it configurable via
+	-- in-game settings or something
+	local connect_err = client.Connect("udp4", "noitaparty.ayaya.moe:5000")
 	if connect_err ~= nil then
 		UNPRINTED_ERR = "could not connect: " .. connect_err .. CRITICAL_ERROR_ENDING
 		print(UNPRINTED_ERR)
@@ -117,7 +115,7 @@ function OnWorldPostUpdate()
 
 		local other_player_entity = OTHER_PLAYER_ENTITIES[id]
 		if other_player_entity == nil then
-			other_player_entity = EntityLoad("mods/noitaparty/files/kummitus.xml", x, y)
+			other_player_entity = EntityLoad("mods/noitaparty/files/player.xml", x, y)
 			OTHER_PLAYER_ENTITIES[id] = other_player_entity
 		else
 			EntitySetTransform(other_player_entity, x, y)

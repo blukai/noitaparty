@@ -14,7 +14,7 @@ import (
 )
 
 type Config struct {
-	LobbyServerAddr4 string `encvonfig:"LOBBY_SERVER_ADDR4" required:"true" default:"0.0.0.0:8008"`
+	LobbyServerAddr4 string `encvonfig:"LOBBY_SERVER_ADDR4" required:"true" default:"0.0.0.0:5000"`
 }
 
 func loadConfig() (*Config, error) {
