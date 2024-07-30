@@ -1,38 +1,35 @@
 local ffi = require("ffi")
 
--- http://lua-users.org/wiki/StringRecipes
-local function string_starts_with(str, start)
-	return str:sub(1, #start) == start
-end
+ffi.cdef([[
+typedef unsigned char GoUint8;
+typedef int GoInt32;
+typedef GoInt32 GoInt;
+typedef unsigned long long GoUint64;
 
--- NOTE(blukai): lua's c language support is not complete..
--- see https://luajit.org/ext_ffi_semantics.html#clang
--- thus certain things need to be removed.
--- what is removed?
--- - #ifdef .. #endif
--- what is kept?
--- - lines that start with typedef, extern
-local function cdef_header_file(filename)
-	local file = io.open(filename, "r")
-	assert(file ~= nil)
+typedef struct PlayerIter {} PlayerIter;
 
-	local lines = {}
-	local inside_ifdef = false
-	for line in file:lines() do
-		if inside_ifdef then
-			inside_ifdef = not string_starts_with(line, "#endif")
-		elseif string_starts_with(line, "#ifdef") then
-			inside_ifdef = true
-		elseif string_starts_with(line, "typedef") or string_starts_with(line, "extern") then
-			table.insert(lines, line)
-		end
-	end
+typedef struct Int32Vector2 {
+	GoInt32 X;
+	GoInt32 Y;
+} Int32Vector2;
+typedef struct TransformPlayer {
+	GoUint64     ID;
+	Int32Vector2 Transform;
+} TransformPlayer;
 
-	file:close()
-	ffi.cdef(table.concat(lines, "\n"))
-end
+char* LastErr();
+void Connect(char* network, char* address);
+GoInt32 SendCCmdJoinRecvSCmdSetSeed(GoUint64 id);
+void SendCCmdTransformPlayer(GoUint64 id, GoInt32 x, GoInt32 y);
 
-cdef_header_file("mods/noitaparty/files/client.h")
+GoInt IterLen(void* iterPtr);
+GoInt IterPos(void* iterPtr);
+GoUint8 IterHasNext(void* iterPtr);
+void IterFree(void* iterPtr);
+
+TransformPlayer* GetNextPlayerInIter(void* iter_ptr);
+PlayerIter* GetPlayerIter();
+]])
 
 local client = ffi.load("mods/noitaparty/files/client.dll")
 
@@ -68,11 +65,24 @@ end
 -- void SendCCmdTransformPlayer(GoUint64 id, GoInt32 x, GoInt32 y);
 mod.SendCCmdTransformPlayer = client.SendCCmdTransformPlayer
 
--- GoSlice GetPlayers();
-function mod.GetPlayers()
-	local players = client.GetPlayers()
-	-- TODO(blukai): figure out players representation
-	print(type(players))
+-- GoInt IterLen(void* iterPtr);
+mod.IterLen = client.IterLen
+
+-- GoInt IterPos(void* iterPtr);
+mod.IterPos = client.IterPos
+
+-- GoUint8 IterHasNext(void* iterPtr);
+function mod.IterHasNext(iter_ptr)
+	return client.IterHasNext(iter_ptr) == 1
 end
+
+-- void IterFree(void* iterPtr);
+mod.IterFree = client.IterFree
+
+-- void* GetNextPlayerInIter(void* iter_ptr);
+mod.GetNextPlayerInIter = client.GetNextPlayerInIter
+
+-- void* GetPlayerIter();
+mod.GetPlayerIter = client.GetPlayerIter
 
 return mod

@@ -1,3 +1,5 @@
+local ffi = require("ffi")
+
 local steam_api = dofile_once("mods/noitaparty/files/steam_api.lua")
 -- TODO(blukai): rename client into something more verbose (like lobbyclient or
 -- something)
@@ -21,6 +23,8 @@ local LAST_PLAYER_Y = nil
 -- KUMMITUS_ENTITY = EntityLoad("mods/noitaparty/files/kummitus.xml")
 -- local player_x, player_y = EntityGetTransform(player_entity)
 -- EntitySetTransform(KUMMITUS_ENTITY, player_x - 10, player_y - 10)
+
+local OTHER_PLAYER_ENTITIES = {}
 
 local function get_player_entity()
 	local players = EntityGetWithTag("player_unit")
@@ -100,7 +104,29 @@ function OnWorldPostUpdate()
 		end
 	end
 
-	-- TODO(blukai): draw other players !
+	local player_iter_ptr = client.GetPlayerIter()
+	while client.IterHasNext(player_iter_ptr) do
+		local other_player = client.GetNextPlayerInIter(player_iter_ptr)
+
+		local id = tonumber(other_player.ID)
+		assert(type(id) == "number")
+		local x = tonumber(other_player.Transform.X)
+		assert(type(x) == "number")
+		local y = tonumber(other_player.Transform.Y)
+		assert(type(y) == "number")
+
+		local other_player_entity = OTHER_PLAYER_ENTITIES[id]
+		if other_player_entity == nil then
+			other_player_entity = EntityLoad("mods/noitaparty/files/kummitus.xml", x, y)
+			OTHER_PLAYER_ENTITIES[id] = other_player_entity
+		else
+			EntitySetTransform(other_player_entity, x, y)
+		end
+	end
+
+	-- TODO(blukai): remove disconnected entities
+
+	client.IterFree(player_iter_ptr)
 end
 
 -- Called when the biome config is loaded.
