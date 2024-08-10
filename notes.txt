@@ -1,0 +1,30 @@
+proton debugging on linux
+----
+
+the kind of debugging that will allow to dig into segfaults with register, stack
+dumps and backtraces.
+
+noita_dev.exe must be added to steam library as a non-steam game...
+
+requirements
+----
+
+- winetricks
+- protontricks
+
+flow
+----
+
+to get appid of noita_dev.exe:
+$ protontricks -s a
+
+to launch noita_dev.exe:
+$ protontricks-launch --no-bwrap --appid 2541517257 ~/.steam/steam/steamapps/common/Noita/noita_dev.exe
+
+references
+----
+
+- https://github.com/ValveSoftware/Proton/blob/proton_9.0/docs/DEBUGGING.md
+- https://github.com/Matoking/protontricks/issues/196
+- https://github.com/Matoking/protontricks/issues/238
+
