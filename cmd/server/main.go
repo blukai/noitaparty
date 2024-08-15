@@ -14,7 +14,10 @@ import (
 )
 
 type Config struct {
-	LobbyServerAddr4 string `encvonfig:"LOBBY_SERVER_ADDR4" required:"true" default:"0.0.0.0:5000"`
+	LobbyServerAddr4 string `envconfig:"LOBBY_SERVER_ADDR4" required:"true" default:"0.0.0.0:5000"`
+	// NOTE: this is temporary solution. in future must be done throught the
+	// "lobby token" thingie.
+	WorldSeed int32 `envconfig:"WORLD_SEED"         required:"true"`
 }
 
 func loadConfig() (*Config, error) {
@@ -48,7 +51,12 @@ func erringMain() error {
 
 	logger := configureLogger()
 
-	lobbyServer, err := lobbyserver.NewLobbyServer("udp4", config.LobbyServerAddr4, logger)
+	lobbyServer, err := lobbyserver.NewLobbyServer(
+		"udp4",
+		config.LobbyServerAddr4,
+		config.WorldSeed,
+		logger,
+	)
 	if err != nil {
 		return fmt.Errorf("could not construct lobby server: %w", err)
 	}

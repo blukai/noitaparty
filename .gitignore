@@ -1,4 +1,7 @@
-mod/files/client.dll
-mod/files/client.h
+/mods/noitaparty/files/udpsocket.h
+/mods/noitaparty/files/udpsocket.dll
+/mods/noitaparty/files/udpsocket.lua
 
-cmd/server/server
+/cmd/server/server
+
+/target

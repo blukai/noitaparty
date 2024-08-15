@@ -1,0 +1,16 @@
+[package]
+name = "udpsocket"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+path = "lib.rs"
+
+[dependencies]
+thiserror.workspace = true
+anyhow.workspace = true
+
+[build-dependencies]
+cbindgen.workspace = true
+

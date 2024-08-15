@@ -1,0 +1,41 @@
+[config]
+default_to_workspace = false
+
+[tasks.udpsocket-debug-cargo]
+command = "cargo"
+args = [
+	"build",
+	"--target",
+	"i686-pc-windows-gnu",
+	"--package",
+	"udpsocket"
+]
+
+[tasks.udpsocket-debug-mod-cp-dll]
+command = "cp"
+args = [
+	"target/i686-pc-windows-gnu/debug/udpsocket.dll",
+	"mods/noitaparty/files/udpsocket.dll",
+]
+
+[tasks.udpsocket-mod-cp-h]
+command = "cp"
+args = [
+	"crates/udpsocket/bindings.h",
+	"mods/noitaparty/files/udpsocket.h",
+]
+
+[tasks.udpsocket-mod-cp-lua]
+command = "cp"
+args = [
+	"crates/udpsocket/bindings.lua",
+	"mods/noitaparty/files/udpsocket.lua",
+]
+
+[tasks.udpsocket-debug]
+dependencies = [
+	"udpsocket-debug-cargo",
+	"udpsocket-debug-mod-cp-dll",
+	"udpsocket-mod-cp-h",
+	"udpsocket-mod-cp-lua",
+]
